@@ -3,7 +3,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from datetime import datetime
-import shutil, os, uuid
+import os, uuid
 import cv2
 import numpy as np
 
@@ -34,7 +34,7 @@ MIN_ASPECT_RATIO = 0.6
 MAX_ASPECT_RATIO = 2.0
 
 
-# 🔹 FUNCIÓN GENERAL PARA RESPUESTAS INVÁLIDAS
+# 🔹 ERROR
 def build_error(position, filename, error, confidence=0):
     return {
         "image_position": position,
@@ -47,9 +47,8 @@ def build_error(position, filename, error, confidence=0):
     }
 
 
-# 🔹 VALIDACIÓN DE IMAGEN
-def validate_image_quality(image_path: str):
-    img = cv2.imread(image_path)
+# 🔹 VALIDACIÓN EN MEMORIA
+def validate_image(img):
     if img is None:
         return False, "No se pudo leer la imagen"
 
@@ -63,15 +62,15 @@ def validate_image_quality(image_path: str):
     if brightness < 40 or brightness > 210:
         return False, "Problema de iluminación"
 
-    # ⚠️ puedes comentar esto si quieres más velocidad
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    if laplacian.var() < 150:
-        return False, "Imagen borrosa"
+    # ⚡ OPCIONAL (puedes comentar para más velocidad)
+    # laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    # if laplacian.var() < 150:
+    #     return False, "Imagen borrosa"
 
     return True, img
 
 
-# 🔹 VALIDACIÓN DE UBRES
+# 🔹 VALIDACIÓN DE UBRE
 def validate_udder_detection(box, img_w, img_h):
     x1, y1, x2, y2 = map(float, box.xyxy[0].tolist())
 
@@ -102,9 +101,9 @@ async def analyze(animal_id: str = Form(...), files: list[UploadFile] = File(...
         raise HTTPException(400, "Máximo 2 imágenes")
 
     invalid_images = []
-    valid_paths = []
+    valid_images = []
 
-    # 🔹 PREPROCESAMIENTO
+    # 🔹 PREPROCESAMIENTO EN MEMORIA
     for i, file in enumerate(files, start=1):
 
         ext = os.path.splitext(file.filename)[1].lower()
@@ -112,23 +111,20 @@ async def analyze(animal_id: str = Form(...), files: list[UploadFile] = File(...
             invalid_images.append(build_error(i, file.filename, "Formato no soportado"))
             continue
 
-        temp_path = f"{UPLOAD_DIR}/temp_{uuid.uuid4()}{ext}"
+        file_bytes = await file.read()
+        np_arr = np.frombuffer(file_bytes, np.uint8)
+        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        with open(temp_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-
-        valid, result = validate_image_quality(temp_path)
+        valid, result = validate_image(img)
 
         if not valid:
             invalid_images.append(build_error(i, file.filename, result))
-            os.remove(temp_path)
         else:
-            valid_paths.append((i, file.filename, temp_path, result))  # guardo imagen ya leída
+            # 🔥 REDUCIR TAMAÑO (CLAVE)
+            img = cv2.resize(result, (640, 640))
+            valid_images.append((i, file.filename, img))
 
     if invalid_images:
-        for _, _, path, _ in valid_paths:
-            os.remove(path)
-
         raise HTTPException(400, {
             "message": "Imágenes inválidas",
             "details": invalid_images
@@ -136,10 +132,10 @@ async def analyze(animal_id: str = Form(...), files: list[UploadFile] = File(...
 
     results_data = []
 
-    # 🔹 YOLO
-    for i, filename, path, img in valid_paths:
+    # 🔹 YOLO EN MEMORIA
+    for i, filename, img in valid_images:
         try:
-            results = model.predict(path, save=False, conf=0.3, verbose=False)
+            results = model.predict(img, imgsz=640, conf=0.3, verbose=False)
 
             if not results[0].boxes:
                 results_data.append(build_error(i, filename, "No se detecta ubre"))
@@ -159,13 +155,13 @@ async def analyze(animal_id: str = Form(...), files: list[UploadFile] = File(...
                 results_data.append(build_error(i, filename, box_data, round(confidence*100,2)))
                 continue
 
-            # ✅ GUARDAR
+            # ✅ GUARDAR SOLO SI ES VÁLIDA
             cls_id = int(box.cls[0])
             status = "Con mastitis" if cls_id == 1 else "Sin mastitis"
 
             final_name = f"{animal_id}_{uuid.uuid4().hex[:8]}.jpg"
             final_path = f"{UPLOAD_DIR}/{final_name}"
-            shutil.copy(path, final_path)
+            cv2.imwrite(final_path, img)
 
             x1, y1, x2, y2, box_w, box_h = box_data
             area_pct = (box_w * box_h) / (w * h) * 100
@@ -189,11 +185,6 @@ async def analyze(animal_id: str = Form(...), files: list[UploadFile] = File(...
 
         except Exception as e:
             results_data.append(build_error(i, filename, str(e)))
-
-    # 🔹 LIMPIAR
-    for _, _, path, _ in valid_paths:
-        if os.path.exists(path):
-            os.remove(path)
 
     # 🔹 RESULTADO FINAL
     has_mastitis = any(r.get("mastitis_detected") for r in results_data)
