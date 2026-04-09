@@ -1,0 +1,16 @@
+# Cachés de Python
+__pycache__/
+*.pyc
+
+# Entorno virtual
+venv/
+
+# Modelos entrenados
+models/
+*.pkl
+
+# Archivos subidos
+uploads/
+
+# Configuraciones sensibles
+.env
