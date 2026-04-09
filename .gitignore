@@ -1,16 +1,3 @@
-# Cachés de Python
-__pycache__/
-*.pyc
-
-# Entorno virtual
-venv/
-
-# Modelos entrenados
-models/
-*.pkl
-
-# Archivos subidos
-uploads/
-
-# Configuraciones sensibles
-.env
+__pycache__/         ← cachés de Python
+uploads/             ← imágenes subidas por usuarios
+venv/                ← entorno virtual
